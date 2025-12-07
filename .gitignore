@@ -1,0 +1,16 @@
+# Binary
+rmswhitelist-gate
+
+# Config (user-specific)
+config.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+.claude-context/
