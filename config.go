@@ -16,6 +16,32 @@ type Config struct {
 	MCSManager        *MCSManagerConfig    `json:"mcsManager"`
 	DynamicServer     *DynamicServerConfig `json:"dynamicServer"`
 	Permission        *PermissionConfig    `json:"permission"`
+	LoadBalancer      *LoadBalancerConfig  `json:"loadBalancer"`
+}
+
+type LoadBalancerConfig struct {
+	Enabled     bool                       `json:"enabled"`
+	HealthCheck *HealthCheckConfig         `json:"healthCheck"`
+	Servers     map[string]*LBServerConfig `json:"servers"`
+}
+
+type HealthCheckConfig struct {
+	IntervalSeconds        int     `json:"intervalSeconds"`
+	WindowSize             int     `json:"windowSize"`
+	UnhealthyAfterFailures int     `json:"unhealthyAfterFailures"`
+	HealthyAfterSuccesses  int     `json:"healthyAfterSuccesses"`
+	JitterThreshold        float64 `json:"jitterThreshold"`
+	DialTimeoutSeconds     int     `json:"dialTimeoutSeconds"`
+}
+
+type LBServerConfig struct {
+	Strategy string           `json:"strategy"`
+	Backends []*BackendConfig `json:"backends"`
+}
+
+type BackendConfig struct {
+	Addr           string `json:"addr"`
+	MaxConnections int    `json:"maxConnections"`
 }
 
 type PermissionConfig struct {
@@ -66,8 +92,20 @@ func defaultConfig() *Config {
 		Permission: &PermissionConfig{
 			Enabled:         true,
 			CacheTTLSeconds: 300,
-			AdminCommands:   []string{"send", "dserver", "glist", "server"},
+			AdminCommands:   []string{"send", "dserver", "glist", "server", "lb"},
 			MsgNoPermission: "你没有权限执行此命令",
+		},
+		LoadBalancer: &LoadBalancerConfig{
+			Enabled: false,
+			HealthCheck: &HealthCheckConfig{
+				IntervalSeconds:        5,
+				WindowSize:             20,
+				UnhealthyAfterFailures: 3,
+				HealthyAfterSuccesses:  3,
+				JitterThreshold:        0.5,
+				DialTimeoutSeconds:     5,
+			},
+			Servers: map[string]*LBServerConfig{},
 		},
 	}
 }

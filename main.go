@@ -41,6 +41,7 @@ type RMSWhitelist struct {
 	mcsClient     *MCSManagerClient
 	dynamicServer *DynamicServerManager
 	permission    *PermissionManager
+	loadBalancer  *LoadBalancer
 }
 
 func newRMSWhitelist(ctx context.Context, p *proxy.Proxy) *RMSWhitelist {
@@ -67,6 +68,16 @@ func (r *RMSWhitelist) init() error {
 	if r.config.Permission != nil && r.config.Permission.Enabled {
 		r.permission = NewPermissionManager(r.log, r.config.APIUrl, r.config.Permission.CacheTTLSeconds, r.config.Permission.AdminCommands)
 		r.log.Info("Permission management enabled", "adminCommands", r.config.Permission.AdminCommands)
+	}
+
+	if r.config.LoadBalancer != nil && r.config.LoadBalancer.Enabled {
+		lb := NewLoadBalancer(r.ctx, r.log, r.proxy, r.config.LoadBalancer, configDir)
+		if err := lb.Start(); err != nil {
+			r.log.Error(err, "Failed to start load balancer")
+		} else {
+			r.loadBalancer = lb
+			r.log.Info("Load balancer enabled")
+		}
 	}
 
 	event.Subscribe(r.proxy.Event(), 0, r.onLogin)
@@ -198,6 +209,31 @@ func (r *RMSWhitelist) registerCommands() {
 		Executes(command.Command(func(ctx *command.Context) error {
 			return r.cmdHelp(ctx)
 		})))
+
+	r.proxy.Command().Register(brigodier.Literal("lb").
+		Then(brigodier.Literal("status").
+			Then(brigodier.Argument("server", brigodier.String).
+				Executes(command.Command(func(ctx *command.Context) error {
+					return r.cmdLBStatus(ctx)
+				}))).
+			Executes(command.Command(func(ctx *command.Context) error {
+				return r.cmdLBStatusAll(ctx)
+			}))).
+		Then(brigodier.Literal("disable").
+			Then(brigodier.Argument("server", brigodier.String).
+				Then(brigodier.Argument("backend", brigodier.String).
+					Executes(command.Command(func(ctx *command.Context) error {
+						return r.cmdLBDisable(ctx)
+					}))))).
+		Then(brigodier.Literal("enable").
+			Then(brigodier.Argument("server", brigodier.String).
+				Then(brigodier.Argument("backend", brigodier.String).
+					Executes(command.Command(func(ctx *command.Context) error {
+						return r.cmdLBEnable(ctx)
+					}))))).
+		Executes(command.Command(func(ctx *command.Context) error {
+			return r.cmdLBHelp(ctx)
+		})))
 }
 
 func (r *RMSWhitelist) cmdHelp(ctx *command.Context) error {
@@ -326,4 +362,152 @@ func getPluginDataDir() string {
 		return "plugins"
 	}
 	return filepath.Join(filepath.Dir(exe), "plugins")
+}
+
+func (r *RMSWhitelist) cmdLBHelp(ctx *command.Context) error {
+	ctx.Source.SendMessage(&component.Text{Content: "Load Balancer Commands:", S: component.Style{Color: color.Gold}})
+	ctx.Source.SendMessage(&component.Text{Content: "  /lb status [server] - Show backend status and health scores", S: component.Style{Color: color.Yellow}})
+	ctx.Source.SendMessage(&component.Text{Content: "  /lb disable <server> <backend> - Disable a backend", S: component.Style{Color: color.Yellow}})
+	ctx.Source.SendMessage(&component.Text{Content: "  /lb enable <server> <backend> - Enable a backend", S: component.Style{Color: color.Yellow}})
+	return nil
+}
+
+func (r *RMSWhitelist) cmdLBStatusAll(ctx *command.Context) error {
+	if r.loadBalancer == nil {
+		ctx.Source.SendMessage(&component.Text{Content: "Load balancer is not enabled", S: component.Style{Color: color.Red}})
+		return nil
+	}
+
+	servers := r.loadBalancer.GetAllServers()
+	if len(servers) == 0 {
+		ctx.Source.SendMessage(&component.Text{Content: "No load balanced servers configured", S: component.Style{Color: color.Yellow}})
+		return nil
+	}
+
+	ctx.Source.SendMessage(&component.Text{Content: "Load Balanced Servers:", S: component.Style{Color: color.Gold}})
+	for name, server := range servers {
+		backends := server.Backends()
+		availableCount := 0
+		for _, b := range backends {
+			if b.IsAvailable() {
+				availableCount++
+			}
+		}
+		ctx.Source.SendMessage(&component.Text{
+			Content: fmt.Sprintf("  %s: %d/%d backends available, strategy: %s",
+				name, availableCount, len(backends), server.Strategy().Name()),
+			S: component.Style{Color: color.Yellow},
+		})
+	}
+	return nil
+}
+
+func (r *RMSWhitelist) cmdLBStatus(ctx *command.Context) error {
+	if r.loadBalancer == nil {
+		ctx.Source.SendMessage(&component.Text{Content: "Load balancer is not enabled", S: component.Style{Color: color.Red}})
+		return nil
+	}
+
+	serverName := ctx.String("server")
+	stats := r.loadBalancer.GetServerStats(serverName)
+	if stats == nil {
+		ctx.Source.SendMessage(&component.Text{Content: fmt.Sprintf("Server '%s' not found", serverName), S: component.Style{Color: color.Red}})
+		return nil
+	}
+
+	server := r.loadBalancer.GetServer(serverName)
+	ctx.Source.SendMessage(&component.Text{
+		Content: fmt.Sprintf("Server '%s' (strategy: %s):", serverName, server.Strategy().Name()),
+		S:       component.Style{Color: color.Gold},
+	})
+
+	for _, stat := range stats {
+		statusColor := color.Green
+		statusText := "OK"
+		if stat.Disabled {
+			statusColor = color.Gray
+			statusText = "DISABLED"
+		} else if !stat.Healthy {
+			statusColor = color.Red
+			statusText = "UNHEALTHY"
+		}
+
+		score := 0
+		for _, b := range server.Backends() {
+			if b.Addr == stat.Addr {
+				score = b.HealthScore(r.config.LoadBalancer.HealthCheck.JitterThreshold)
+				break
+			}
+		}
+
+		ctx.Source.SendMessage(&component.Text{
+			Content: fmt.Sprintf("  %s [%s] - %d player(s)", stat.Addr, statusText, stat.CurrentConns),
+			S:       component.Style{Color: statusColor},
+		})
+		ctx.Source.SendMessage(&component.Text{
+			Content: fmt.Sprintf("    Score: %d | Max: %d | Latency: %.1fms | Jitter: %.1fms | Fails: %d",
+				score, stat.MaxConnections, stat.AvgLatency, stat.Jitter, stat.FailCount),
+			S: component.Style{Color: color.Gray},
+		})
+		if len(stat.Players) > 0 {
+			playerList := ""
+			for i, p := range stat.Players {
+				if i > 0 {
+					playerList += ", "
+				}
+				playerList += p
+			}
+			ctx.Source.SendMessage(&component.Text{
+				Content: fmt.Sprintf("    Players: %s", playerList),
+				S:       component.Style{Color: color.Aqua},
+			})
+		}
+	}
+	return nil
+}
+
+func (r *RMSWhitelist) cmdLBDisable(ctx *command.Context) error {
+	if r.loadBalancer == nil {
+		ctx.Source.SendMessage(&component.Text{Content: "Load balancer is not enabled", S: component.Style{Color: color.Red}})
+		return nil
+	}
+
+	serverName := ctx.String("server")
+	backendAddr := ctx.String("backend")
+
+	if r.loadBalancer.DisableBackend(serverName, backendAddr) {
+		ctx.Source.SendMessage(&component.Text{
+			Content: fmt.Sprintf("Backend '%s' disabled for server '%s'", backendAddr, serverName),
+			S:       component.Style{Color: color.Green},
+		})
+	} else {
+		ctx.Source.SendMessage(&component.Text{
+			Content: fmt.Sprintf("Backend '%s' not found for server '%s'", backendAddr, serverName),
+			S:       component.Style{Color: color.Red},
+		})
+	}
+	return nil
+}
+
+func (r *RMSWhitelist) cmdLBEnable(ctx *command.Context) error {
+	if r.loadBalancer == nil {
+		ctx.Source.SendMessage(&component.Text{Content: "Load balancer is not enabled", S: component.Style{Color: color.Red}})
+		return nil
+	}
+
+	serverName := ctx.String("server")
+	backendAddr := ctx.String("backend")
+
+	if r.loadBalancer.EnableBackend(serverName, backendAddr) {
+		ctx.Source.SendMessage(&component.Text{
+			Content: fmt.Sprintf("Backend '%s' enabled for server '%s'", backendAddr, serverName),
+			S:       component.Style{Color: color.Green},
+		})
+	} else {
+		ctx.Source.SendMessage(&component.Text{
+			Content: fmt.Sprintf("Backend '%s' not found for server '%s'", backendAddr, serverName),
+			S:       component.Style{Color: color.Red},
+		})
+	}
+	return nil
 }
