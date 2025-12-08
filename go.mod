@@ -1,4 +1,4 @@
-module github.com/Trirrin/rmswhitelist-gate
+module github.com/Trirrin/rms-gate
 
 go 1.24.1
 

@@ -9,10 +9,29 @@ import (
 )
 
 type Config struct {
-	APIUrl            string `json:"apiUrl"`
-	TimeoutSeconds    int    `json:"timeoutSeconds"`
-	MsgNotInWhitelist string `json:"msgNotInWhitelist"`
-	MsgServerError    string `json:"msgServerError"`
+	APIUrl            string               `json:"apiUrl"`
+	TimeoutSeconds    int                  `json:"timeoutSeconds"`
+	MsgNotInWhitelist string               `json:"msgNotInWhitelist"`
+	MsgServerError    string               `json:"msgServerError"`
+	MCSManager        *MCSManagerConfig    `json:"mcsManager"`
+	DynamicServer     *DynamicServerConfig `json:"dynamicServer"`
+}
+
+type MCSManagerConfig struct {
+	BaseURL  string `json:"baseUrl"`
+	APIKey   string `json:"apiKey"`
+	DaemonID string `json:"daemonId"`
+}
+
+type DynamicServerConfig struct {
+	ServerUUIDMap              map[string]string `json:"serverUuidMap"`
+	AutoStartServers           []string          `json:"autoStartServers"`
+	StartupTimeoutSeconds      int               `json:"startupTimeoutSeconds"`
+	PollIntervalSeconds        int               `json:"pollIntervalSeconds"`
+	ConnectivityTimeoutSeconds int               `json:"connectivityTimeoutSeconds"`
+	IdleShutdownSeconds        int               `json:"idleShutdownSeconds"`
+	MsgStarting                string            `json:"msgStarting"`
+	MsgStartupTimeout          string            `json:"msgStartupTimeout"`
 }
 
 func defaultConfig() *Config {
@@ -21,6 +40,21 @@ func defaultConfig() *Config {
 		TimeoutSeconds:    10,
 		MsgNotInWhitelist: "您当前不在白名单中",
 		MsgServerError:    "500服务器内部错误，请联系管理员",
+		MCSManager: &MCSManagerConfig{
+			BaseURL:  "https://mcsm.example.com/api",
+			APIKey:   "your-api-key",
+			DaemonID: "your-daemon-id",
+		},
+		DynamicServer: &DynamicServerConfig{
+			ServerUUIDMap:              map[string]string{},
+			AutoStartServers:           []string{},
+			StartupTimeoutSeconds:      60,
+			PollIntervalSeconds:        2,
+			ConnectivityTimeoutSeconds: 30,
+			IdleShutdownSeconds:        60,
+			MsgStarting:                "正在启动服务器 %s，请稍候...",
+			MsgStartupTimeout:          "服务器 %s 启动超时，请稍后重试",
+		},
 	}
 }
 
