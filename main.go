@@ -40,6 +40,7 @@ type RMSWhitelist struct {
 	checker       *WhitelistChecker
 	mcsClient     *MCSManagerClient
 	dynamicServer *DynamicServerManager
+	permission    *PermissionManager
 }
 
 func newRMSWhitelist(ctx context.Context, p *proxy.Proxy) *RMSWhitelist {
@@ -63,8 +64,14 @@ func (r *RMSWhitelist) init() error {
 		r.log.Info("Dynamic server management enabled")
 	}
 
+	if r.config.Permission != nil && r.config.Permission.Enabled {
+		r.permission = NewPermissionManager(r.log, r.config.APIUrl, r.config.Permission.CacheTTLSeconds, r.config.Permission.AdminCommands)
+		r.log.Info("Permission management enabled", "adminCommands", r.config.Permission.AdminCommands)
+	}
+
 	event.Subscribe(r.proxy.Event(), 0, r.onLogin)
 	event.Subscribe(r.proxy.Event(), -100, r.onServerPreConnect)
+	event.Subscribe(r.proxy.Event(), -100, r.onCommandExecute)
 
 	r.registerCommands()
 
@@ -149,6 +156,29 @@ func isServerOnline(addr net.Addr) bool {
 	}
 	conn.Close()
 	return true
+}
+
+func (r *RMSWhitelist) onCommandExecute(e *proxy.CommandExecuteEvent) {
+	if r.permission == nil {
+		return
+	}
+
+	player, ok := e.Source().(proxy.Player)
+	if !ok {
+		return
+	}
+
+	cmd := e.Command()
+	username := player.Username()
+
+	if !r.permission.CanExecute(r.ctx, username, cmd) {
+		e.SetAllowed(false)
+		r.log.Info("Command blocked due to insufficient permission", "player", username, "command", cmd)
+		player.SendMessage(&component.Text{
+			Content: r.config.Permission.MsgNoPermission,
+			S:       component.Style{Color: color.Red},
+		})
+	}
 }
 
 func (r *RMSWhitelist) registerCommands() {

@@ -15,6 +15,14 @@ type Config struct {
 	MsgServerError    string               `json:"msgServerError"`
 	MCSManager        *MCSManagerConfig    `json:"mcsManager"`
 	DynamicServer     *DynamicServerConfig `json:"dynamicServer"`
+	Permission        *PermissionConfig    `json:"permission"`
+}
+
+type PermissionConfig struct {
+	Enabled             bool     `json:"enabled"`
+	CacheTTLSeconds     int      `json:"cacheTtlSeconds"`
+	AdminCommands       []string `json:"adminCommands"`
+	MsgNoPermission     string   `json:"msgNoPermission"`
 }
 
 type MCSManagerConfig struct {
@@ -54,6 +62,12 @@ func defaultConfig() *Config {
 			IdleShutdownSeconds:        60,
 			MsgStarting:                "正在启动服务器 %s，请稍候...",
 			MsgStartupTimeout:          "服务器 %s 启动超时，请稍后重试",
+		},
+		Permission: &PermissionConfig{
+			Enabled:         true,
+			CacheTTLSeconds: 300,
+			AdminCommands:   []string{"send", "dserver", "glist", "server"},
+			MsgNoPermission: "你没有权限执行此命令",
 		},
 	}
 }

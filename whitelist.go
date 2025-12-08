@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -35,7 +36,7 @@ type whitelistRequest struct {
 	UUID     string `json:"uuid"`
 }
 
-func (w *WhitelistChecker) Check(ctx context.Context, username, uuid, apiURL string, timeoutSeconds int) CheckResult {
+func (w *WhitelistChecker) Check(ctx context.Context, username, uuid, baseURL string, timeoutSeconds int) CheckResult {
 	reqBody := whitelistRequest{
 		Username: username,
 		UUID:     uuid,
@@ -50,6 +51,7 @@ func (w *WhitelistChecker) Check(ctx context.Context, username, uuid, apiURL str
 	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
+	apiURL := strings.TrimSuffix(baseURL, "/") + "/api/whitelist"
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, apiURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		w.log.Error(err, "Failed to create request")
