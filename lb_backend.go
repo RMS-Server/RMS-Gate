@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"math"
 	"net"
 	"sync"
@@ -369,13 +370,27 @@ func (b *Backend) LastCheckTime() time.Time {
 }
 
 func (b *Backend) MCPing(timeout time.Duration) (time.Duration, error) {
-	addr, err := net.ResolveTCPAddr("tcp", b.Addr)
-	if err != nil {
-		return 0, err
-	}
 	start := time.Now()
-	err = MCPing(addr, timeout)
 	latency := time.Since(start)
+
+	// Hard cap total ping time (DNS + dial + status exchange).
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", b.Addr)
+	if err != nil {
+		return latency, err
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+	}
+
+	err = MCPingConn(conn, b.Addr, timeout)
 	if err != nil {
 		return latency, err
 	}

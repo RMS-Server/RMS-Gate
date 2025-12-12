@@ -11,11 +11,12 @@ import (
 )
 
 type LoadBalancedServerInfo struct {
-	name            string
-	backends        []*Backend
-	strategy        Strategy
-	jitterThreshold float64
-	dialTimeout     time.Duration
+	name                   string
+	backends               []*Backend
+	strategy               Strategy
+	jitterThreshold        float64
+	dialTimeout            time.Duration
+	unhealthyAfterFailures int
 
 	defaultAddr net.Addr
 	history     *HistoryManager
@@ -27,6 +28,7 @@ func NewLoadBalancedServerInfo(
 	strategy Strategy,
 	jitterThreshold float64,
 	dialTimeout time.Duration,
+	unhealthyAfterFailures int,
 	history *HistoryManager,
 ) *LoadBalancedServerInfo {
 	var defaultAddr net.Addr
@@ -36,13 +38,14 @@ func NewLoadBalancedServerInfo(
 	}
 
 	return &LoadBalancedServerInfo{
-		name:            name,
-		backends:        backends,
-		strategy:        strategy,
-		jitterThreshold: jitterThreshold,
-		dialTimeout:     dialTimeout,
-		defaultAddr:     defaultAddr,
-		history:         history,
+		name:                   name,
+		backends:               backends,
+		strategy:               strategy,
+		jitterThreshold:        jitterThreshold,
+		dialTimeout:            dialTimeout,
+		unhealthyAfterFailures: unhealthyAfterFailures,
+		defaultAddr:            defaultAddr,
+		history:                history,
 	}
 }
 
@@ -73,6 +76,10 @@ func (s *LoadBalancedServerInfo) Dial(ctx context.Context, player proxy.Player) 
 	if err != nil {
 		backend.RecordFailure()
 		backend.RecordLatency(latency)
+		if s.unhealthyAfterFailures > 0 && backend.FailCount() >= int32(s.unhealthyAfterFailures) && backend.IsHealthy() {
+			backend.SetHealthy(false)
+			backend.ResetSuccessCount()
+		}
 		return nil, fmt.Errorf("failed to connect to backend %s: %w", backend.Addr, err)
 	}
 

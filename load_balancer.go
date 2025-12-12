@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -80,6 +81,7 @@ func (lb *LoadBalancer) registerServer(name string, cfg *LBServerConfig) error {
 		strategy,
 		lb.cfg.HealthCheck.JitterThreshold,
 		dialTimeout,
+		lb.cfg.HealthCheck.UnhealthyAfterFailures,
 		lb.history,
 	)
 
@@ -102,6 +104,13 @@ func (lb *LoadBalancer) registerServer(name string, cfg *LBServerConfig) error {
 }
 
 func (lb *LoadBalancer) healthCheckLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			lb.log.Error(fmt.Errorf("panic: %v", r), "Health check loop panicked, restarting")
+			go lb.healthCheckLoop()
+		}
+	}()
+
 	interval := time.Duration(lb.cfg.HealthCheck.IntervalSeconds) * time.Second
 	if interval == 0 {
 		interval = 5 * time.Second

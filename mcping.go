@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -9,27 +10,49 @@ import (
 	"time"
 )
 
-// MCPing performs a Minecraft Server List Ping to check if server is fully started
+// MCPing performs a Minecraft Server List Ping to check if server is fully started.
+// This wrapper keeps the old signature but enforces a hard timeout over DNS + dial + status exchange.
 func MCPing(addr net.Addr, timeout time.Duration) error {
-	conn, err := net.DialTimeout(addr.Network(), addr.String(), timeout)
+	return MCPingAddrString(addr.String(), timeout)
+}
+
+// MCPingAddrString dials the address with a hard timeout and performs the status ping.
+func MCPingAddrString(addr string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(timeout))
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(timeout))
+	}
 
-	host, portStr, _ := net.SplitHostPort(addr.String())
+	return MCPingConn(conn, addr, timeout)
+}
+
+// MCPingConn performs the Minecraft status exchange on an already-established connection.
+// The caller should set appropriate deadlines on conn.
+func MCPingConn(conn net.Conn, addr string, timeout time.Duration) error {
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	host, portStr, _ := net.SplitHostPort(addr)
 	var port uint16 = 25565
 	fmt.Sscanf(portStr, "%d", &port)
 
 	// Send handshake packet (packet ID 0x00)
 	handshake := &bytes.Buffer{}
-	writeVarInt(handshake, 0x00)         // Packet ID
-	writeVarInt(handshake, 767)          // Protocol version (1.21)
-	writeString(handshake, host)         // Server address
-	binary.Write(handshake, binary.BigEndian, port) // Server port
-	writeVarInt(handshake, 1)            // Next state: Status
+	writeVarInt(handshake, 0x00)                        // Packet ID
+	writeVarInt(handshake, 767)                         // Protocol version (1.21)
+	writeString(handshake, host)                        // Server address
+	_ = binary.Write(handshake, binary.BigEndian, port) // Server port
+	writeVarInt(handshake, 1)                           // Next state: Status
 
 	if err := writePacket(conn, handshake.Bytes()); err != nil {
 		return fmt.Errorf("failed to send handshake: %w", err)
