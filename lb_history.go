@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,15 +10,17 @@ import (
 )
 
 const (
-	emaAlpha        = 0.1  // EMA smoothing factor: 10% new data, 90% history
+	emaAlpha         = 0.1 // EMA smoothing factor: 10% new data, 90% history
 	minSamplesForUse = 20  // Minimum samples before using historical data
 )
 
 // PeriodStats stores statistics for a specific 15-minute period
 type PeriodStats struct {
-	AvgLatency float64 `json:"avgLatency"`
-	AvgJitter  float64 `json:"avgJitter"`
-	Samples    int     `json:"samples"`
+	AvgLatency  float64 `json:"avgLatency"`
+	AvgJitter   float64 `json:"avgJitter"`
+	Samples     int     `json:"samples"`
+	PeriodIndex int     `json:"periodIndex"` // 0-95, stable slot within local day
+	PeriodLabel string  `json:"periodLabel"` // "HH:MM-HH:MM" in local timezone
 }
 
 // BackendHistory stores statistics for 96 periods (24 hours * 4 periods per hour)
@@ -48,6 +51,17 @@ func getPeriodIndex() int {
 	return now.Hour()*4 + now.Minute()/15
 }
 
+func periodLabel(period int) string {
+	if period < 0 || period > 95 {
+		return ""
+	}
+	startMin := period * 15
+	endMin := (startMin + 15) % (24 * 60)
+	sh, sm := startMin/60, startMin%60
+	eh, em := endMin/60, endMin%60
+	return fmt.Sprintf("%02d:%02d-%02d:%02d", sh, sm, eh, em)
+}
+
 // Record records a new sample for a backend at the current 15-minute period
 func (hm *HistoryManager) Record(addr string, latency, jitter float64) {
 	period := getPeriodIndex()
@@ -65,6 +79,11 @@ func (hm *HistoryManager) Record(addr string, latency, jitter float64) {
 	}
 
 	stats := history.PeriodStats[period]
+	// Backfill period metadata for export/debugging.
+	if stats.PeriodLabel == "" {
+		stats.PeriodIndex = period
+		stats.PeriodLabel = periodLabel(period)
+	}
 	if stats.Samples == 0 {
 		// First sample for this period
 		stats.AvgLatency = latency
@@ -187,6 +206,11 @@ func (hm *HistoryManager) load() {
 		for i := range history.PeriodStats {
 			if history.PeriodStats[i] == nil {
 				history.PeriodStats[i] = &PeriodStats{}
+			}
+			// Backfill metadata for older history files.
+			if history.PeriodStats[i].PeriodLabel == "" {
+				history.PeriodStats[i].PeriodIndex = i
+				history.PeriodStats[i].PeriodLabel = periodLabel(i)
 			}
 		}
 	}
