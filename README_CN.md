@@ -1,5 +1,7 @@
 # RMS-Gate
 
+[English](README.md) | [中文](README_CN.md)
+
 为 RMS 服务器定制的 [Gate](https://github.com/minekube/gate) Minecraft 代理服务器，支持远程白名单验证和智能负载均衡。
 
 ## 核心功能

@@ -1,5 +1,7 @@
 # RMS-Gate
 
+[English](README.md) | [中文](README_CN.md)
+
 A customized [Gate](https://github.com/minekube/gate) Minecraft proxy server for RMS Server, featuring remote whitelist validation and intelligent load balancing.
 
 ## Features
