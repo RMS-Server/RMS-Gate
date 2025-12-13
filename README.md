@@ -74,7 +74,7 @@ go build -o rms-gate .
 
 ## Configuration
 
-Configuration is stored in `plugins/rms_whitelist/config.json`:
+Configuration is stored in `rms-gate-config.json` (same directory as the executable):
 
 ```json
 {

@@ -74,7 +74,7 @@ go build -o rms-gate .
 
 ## 配置
 
-配置文件位于 `plugins/rms_whitelist/config.json`：
+配置文件位于 `rms-gate-config.json`（与可执行文件同目录）：
 
 ```json
 {

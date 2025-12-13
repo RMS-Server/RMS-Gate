@@ -62,7 +62,7 @@ func newRMSWhitelist(ctx context.Context, p *proxy.Proxy) *RMSWhitelist {
 func (r *RMSWhitelist) init() error {
 	r.log.Info("Initializing RMS Whitelist Plugin...")
 
-	configDir := filepath.Join(getPluginDataDir(), "rms_whitelist")
+	configDir := getPluginDataDir()
 	r.config = config.LoadConfig(configDir, r.log)
 	r.checker = whitelist.NewChecker(r.log)
 
@@ -413,9 +413,9 @@ func getPluginDataDir() string {
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return "plugins"
+		return "."
 	}
-	return filepath.Join(filepath.Dir(exe), "plugins")
+	return filepath.Dir(exe)
 }
 
 func (r *RMSWhitelist) cmdLBHelp(ctx *command.Context) error {

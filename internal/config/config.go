@@ -111,7 +111,7 @@ func defaultConfig() *Config {
 }
 
 func LoadConfig(configDir string, log logr.Logger) *Config {
-	configPath := filepath.Join(configDir, "config.json")
+	configPath := filepath.Join(configDir, "rms-gate-config.json")
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		if err := os.MkdirAll(configDir, 0755); err != nil {
