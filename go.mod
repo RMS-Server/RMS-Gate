@@ -1,4 +1,4 @@
-module github.com/Trirrin/rms-gate
+module github.com/RMS-Server/RMS-Gate
 
 go 1.24.1
 

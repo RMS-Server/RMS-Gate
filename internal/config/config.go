@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"encoding/json"
@@ -45,10 +45,10 @@ type BackendConfig struct {
 }
 
 type PermissionConfig struct {
-	Enabled             bool     `json:"enabled"`
-	CacheTTLSeconds     int      `json:"cacheTtlSeconds"`
-	AdminCommands       []string `json:"adminCommands"`
-	MsgNoPermission     string   `json:"msgNoPermission"`
+	Enabled         bool     `json:"enabled"`
+	CacheTTLSeconds int      `json:"cacheTtlSeconds"`
+	AdminCommands   []string `json:"adminCommands"`
+	MsgNoPermission string   `json:"msgNoPermission"`
 }
 
 type MCSManagerConfig struct {
@@ -110,7 +110,7 @@ func defaultConfig() *Config {
 	}
 }
 
-func loadConfig(configDir string, log logr.Logger) *Config {
+func LoadConfig(configDir string, log logr.Logger) *Config {
 	configPath := filepath.Join(configDir, "config.json")
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {

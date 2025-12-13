@@ -1,4 +1,4 @@
-package main
+package permission
 
 import (
 	"context"
@@ -12,17 +12,17 @@ import (
 )
 
 const (
-	PermissionLevelAdmin = 3
+	LevelAdmin = 3
 )
 
-type PermissionManager struct {
-	client       *http.Client
-	log          logr.Logger
-	baseURL      string
-	cache        map[string]int // username -> permission_level
-	cacheMu      sync.RWMutex
-	cacheExpiry  time.Time
-	cacheTTL     time.Duration
+type Manager struct {
+	client        *http.Client
+	log           logr.Logger
+	baseURL       string
+	cache         map[string]int // username -> permission_level
+	cacheMu       sync.RWMutex
+	cacheExpiry   time.Time
+	cacheTTL      time.Duration
 	adminCommands []string
 }
 
@@ -34,8 +34,8 @@ type permissionResponse struct {
 	} `json:"users"`
 }
 
-func NewPermissionManager(log logr.Logger, baseURL string, cacheTTLSeconds int, adminCommands []string) *PermissionManager {
-	return &PermissionManager{
+func NewManager(log logr.Logger, baseURL string, cacheTTLSeconds int, adminCommands []string) *Manager {
+	return &Manager{
 		client:        &http.Client{Timeout: 10 * time.Second},
 		log:           log.WithName("permission"),
 		baseURL:       strings.TrimSuffix(baseURL, "/"),
@@ -45,7 +45,7 @@ func NewPermissionManager(log logr.Logger, baseURL string, cacheTTLSeconds int, 
 	}
 }
 
-func (p *PermissionManager) fetchPermissions(ctx context.Context) error {
+func (p *Manager) fetchPermissions(ctx context.Context) error {
 	url := p.baseURL + "/api/mcdr/permission"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -81,7 +81,7 @@ func (p *PermissionManager) fetchPermissions(ctx context.Context) error {
 	return nil
 }
 
-func (p *PermissionManager) GetPermissionLevel(ctx context.Context, username string) int {
+func (p *Manager) GetPermissionLevel(ctx context.Context, username string) int {
 	p.cacheMu.RLock()
 	expired := time.Now().After(p.cacheExpiry)
 	level, exists := p.cache[strings.ToLower(username)]
@@ -104,11 +104,11 @@ func (p *PermissionManager) GetPermissionLevel(ctx context.Context, username str
 	return level
 }
 
-func (p *PermissionManager) IsAdmin(ctx context.Context, username string) bool {
-	return p.GetPermissionLevel(ctx, username) > PermissionLevelAdmin
+func (p *Manager) IsAdmin(ctx context.Context, username string) bool {
+	return p.GetPermissionLevel(ctx, username) > LevelAdmin
 }
 
-func (p *PermissionManager) IsAdminCommand(cmd string) bool {
+func (p *Manager) IsAdminCommand(cmd string) bool {
 	cmdLower := strings.ToLower(strings.TrimPrefix(cmd, "/"))
 	parts := strings.Fields(cmdLower)
 	if len(parts) == 0 {
@@ -124,7 +124,7 @@ func (p *PermissionManager) IsAdminCommand(cmd string) bool {
 	return false
 }
 
-func (p *PermissionManager) CanExecute(ctx context.Context, username, cmd string) bool {
+func (p *Manager) CanExecute(ctx context.Context, username, cmd string) bool {
 	if !p.IsAdminCommand(cmd) {
 		return true
 	}

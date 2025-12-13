@@ -16,6 +16,13 @@ import (
 	"go.minekube.com/gate/cmd/gate"
 	"go.minekube.com/gate/pkg/command"
 	"go.minekube.com/gate/pkg/edition/java/proxy"
+
+	"github.com/RMS-Server/RMS-Gate/internal/config"
+	"github.com/RMS-Server/RMS-Gate/internal/dynamicserver"
+	"github.com/RMS-Server/RMS-Gate/internal/loadbalancer"
+	"github.com/RMS-Server/RMS-Gate/internal/mcsmanager"
+	"github.com/RMS-Server/RMS-Gate/internal/permission"
+	"github.com/RMS-Server/RMS-Gate/internal/whitelist"
 )
 
 var pluginCtx context.Context
@@ -36,12 +43,12 @@ type RMSWhitelist struct {
 	ctx           context.Context
 	proxy         *proxy.Proxy
 	log           logr.Logger
-	config        *Config
-	checker       *WhitelistChecker
-	mcsClient     *MCSManagerClient
-	dynamicServer *DynamicServerManager
-	permission    *PermissionManager
-	loadBalancer  *LoadBalancer
+	config        *config.Config
+	checker       *whitelist.Checker
+	mcsClient     *mcsmanager.Client
+	dynamicServer *dynamicserver.Manager
+	permission    *permission.Manager
+	loadBalancer  *loadbalancer.LoadBalancer
 }
 
 func newRMSWhitelist(ctx context.Context, p *proxy.Proxy) *RMSWhitelist {
@@ -56,22 +63,39 @@ func (r *RMSWhitelist) init() error {
 	r.log.Info("Initializing RMS Whitelist Plugin...")
 
 	configDir := filepath.Join(getPluginDataDir(), "rms_whitelist")
-	r.config = loadConfig(configDir, r.log)
-	r.checker = NewWhitelistChecker(r.log)
+	r.config = config.LoadConfig(configDir, r.log)
+	r.checker = whitelist.NewChecker(r.log)
 
 	if r.config.MCSManager != nil && r.config.DynamicServer != nil {
-		r.mcsClient = NewMCSManagerClient(r.log, r.config.MCSManager)
-		r.dynamicServer = NewDynamicServerManager(r.ctx, r.log, r.proxy, r.mcsClient, r.config.DynamicServer)
+		mcsCfg := &mcsmanager.Config{
+			BaseURL:  r.config.MCSManager.BaseURL,
+			APIKey:   r.config.MCSManager.APIKey,
+			DaemonID: r.config.MCSManager.DaemonID,
+		}
+		r.mcsClient = mcsmanager.NewClient(r.log, mcsCfg)
+
+		dsCfg := &dynamicserver.Config{
+			ServerUUIDMap:              r.config.DynamicServer.ServerUUIDMap,
+			AutoStartServers:           r.config.DynamicServer.AutoStartServers,
+			StartupTimeoutSeconds:      r.config.DynamicServer.StartupTimeoutSeconds,
+			PollIntervalSeconds:        r.config.DynamicServer.PollIntervalSeconds,
+			ConnectivityTimeoutSeconds: r.config.DynamicServer.ConnectivityTimeoutSeconds,
+			IdleShutdownSeconds:        r.config.DynamicServer.IdleShutdownSeconds,
+			MsgStarting:                r.config.DynamicServer.MsgStarting,
+			MsgStartupTimeout:          r.config.DynamicServer.MsgStartupTimeout,
+		}
+		r.dynamicServer = dynamicserver.NewManager(r.ctx, r.log, r.proxy, r.mcsClient, dsCfg)
 		r.log.Info("Dynamic server management enabled")
 	}
 
 	if r.config.Permission != nil && r.config.Permission.Enabled {
-		r.permission = NewPermissionManager(r.log, r.config.APIUrl, r.config.Permission.CacheTTLSeconds, r.config.Permission.AdminCommands)
+		r.permission = permission.NewManager(r.log, r.config.APIUrl, r.config.Permission.CacheTTLSeconds, r.config.Permission.AdminCommands)
 		r.log.Info("Permission management enabled", "adminCommands", r.config.Permission.AdminCommands)
 	}
 
 	if r.config.LoadBalancer != nil && r.config.LoadBalancer.Enabled {
-		lb := NewLoadBalancer(r.ctx, r.log, r.proxy, r.config.LoadBalancer, configDir)
+		lbCfg := convertLoadBalancerConfig(r.config.LoadBalancer)
+		lb := loadbalancer.NewLoadBalancer(r.ctx, r.log, r.proxy, lbCfg, configDir)
 		if err := lb.Start(); err != nil {
 			r.log.Error(err, "Failed to start load balancer")
 		} else {
@@ -90,6 +114,36 @@ func (r *RMSWhitelist) init() error {
 	return nil
 }
 
+func convertLoadBalancerConfig(cfg *config.LoadBalancerConfig) *loadbalancer.Config {
+	servers := make(map[string]*loadbalancer.ServerConfig)
+	for name, srv := range cfg.Servers {
+		backends := make([]*loadbalancer.BackendConfig, len(srv.Backends))
+		for i, b := range srv.Backends {
+			backends[i] = &loadbalancer.BackendConfig{
+				Addr:           b.Addr,
+				MaxConnections: b.MaxConnections,
+			}
+		}
+		servers[name] = &loadbalancer.ServerConfig{
+			Strategy: srv.Strategy,
+			Backends: backends,
+		}
+	}
+
+	return &loadbalancer.Config{
+		Enabled: cfg.Enabled,
+		HealthCheck: &loadbalancer.HealthCheckConfig{
+			IntervalSeconds:        cfg.HealthCheck.IntervalSeconds,
+			WindowSize:             cfg.HealthCheck.WindowSize,
+			UnhealthyAfterFailures: cfg.HealthCheck.UnhealthyAfterFailures,
+			HealthyAfterSuccesses:  cfg.HealthCheck.HealthyAfterSuccesses,
+			JitterThreshold:        cfg.HealthCheck.JitterThreshold,
+			DialTimeoutSeconds:     cfg.HealthCheck.DialTimeoutSeconds,
+		},
+		Servers: servers,
+	}
+}
+
 func (r *RMSWhitelist) onLogin(e *proxy.LoginEvent) {
 	player := e.Player()
 	username := player.Username()
@@ -98,12 +152,12 @@ func (r *RMSWhitelist) onLogin(e *proxy.LoginEvent) {
 	result := r.checker.Check(r.ctx, username, uuid, r.config.APIUrl, r.config.TimeoutSeconds)
 
 	switch result {
-	case Allowed:
+	case whitelist.Allowed:
 		r.log.Info("User is whitelisted", "username", username, "uuid", uuid)
-	case NotInWhitelist:
+	case whitelist.NotInWhitelist:
 		r.log.Info("User is not in whitelist", "username", username, "uuid", uuid)
 		e.Deny(&component.Text{Content: r.config.MsgNotInWhitelist})
-	case ServerError:
+	case whitelist.ServerError:
 		r.log.Error(nil, "Whitelist check failed", "username", username, "uuid", uuid)
 		e.Deny(&component.Text{Content: r.config.MsgServerError})
 	}
@@ -435,7 +489,7 @@ func (r *RMSWhitelist) cmdLBStatus(ctx *command.Context) error {
 		score := 0
 		for _, b := range server.Backends() {
 			if b.Addr == stat.Addr {
-				score = b.HealthScore(r.config.LoadBalancer.HealthCheck.JitterThreshold)
+				score = b.HealthScore(r.loadBalancer.Config().HealthCheck.JitterThreshold)
 				break
 			}
 		}

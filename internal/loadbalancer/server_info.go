@@ -1,4 +1,4 @@
-package main
+package loadbalancer
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"go.minekube.com/gate/pkg/edition/java/proxy"
 )
 
-type LoadBalancedServerInfo struct {
+type ServerInfo struct {
 	name                   string
 	backends               []*Backend
 	strategy               Strategy
@@ -22,7 +22,7 @@ type LoadBalancedServerInfo struct {
 	history     *HistoryManager
 }
 
-func NewLoadBalancedServerInfo(
+func NewServerInfo(
 	name string,
 	backends []*Backend,
 	strategy Strategy,
@@ -30,14 +30,14 @@ func NewLoadBalancedServerInfo(
 	dialTimeout time.Duration,
 	unhealthyAfterFailures int,
 	history *HistoryManager,
-) *LoadBalancedServerInfo {
+) *ServerInfo {
 	var defaultAddr net.Addr
 	if len(backends) > 0 {
 		addr, _ := net.ResolveTCPAddr("tcp", backends[0].Addr)
 		defaultAddr = addr
 	}
 
-	return &LoadBalancedServerInfo{
+	return &ServerInfo{
 		name:                   name,
 		backends:               backends,
 		strategy:               strategy,
@@ -49,15 +49,15 @@ func NewLoadBalancedServerInfo(
 	}
 }
 
-func (s *LoadBalancedServerInfo) Name() string {
+func (s *ServerInfo) Name() string {
 	return s.name
 }
 
-func (s *LoadBalancedServerInfo) Addr() net.Addr {
+func (s *ServerInfo) Addr() net.Addr {
 	return s.defaultAddr
 }
 
-func (s *LoadBalancedServerInfo) Dial(ctx context.Context, player proxy.Player) (net.Conn, error) {
+func (s *ServerInfo) Dial(ctx context.Context, player proxy.Player) (net.Conn, error) {
 	backend := s.strategy.Select(s.backends, s.jitterThreshold, s.history)
 	if backend == nil {
 		return nil, fmt.Errorf("no available backend for server %s", s.name)
@@ -99,11 +99,11 @@ func (s *LoadBalancedServerInfo) Dial(ctx context.Context, player proxy.Player) 
 	}, nil
 }
 
-func (s *LoadBalancedServerInfo) Backends() []*Backend {
+func (s *ServerInfo) Backends() []*Backend {
 	return s.backends
 }
 
-func (s *LoadBalancedServerInfo) Strategy() Strategy {
+func (s *ServerInfo) Strategy() Strategy {
 	return s.strategy
 }
 

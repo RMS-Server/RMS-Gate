@@ -1,43 +1,58 @@
-package main
+package dynamicserver
 
 import (
 	"context"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
 	"go.minekube.com/gate/pkg/edition/java/proxy"
+
+	"github.com/RMS-Server/RMS-Gate/internal/mcsmanager"
+	"github.com/RMS-Server/RMS-Gate/internal/minecraft"
 )
 
-type ServerShutdownConfig struct {
+type Config struct {
+	ServerUUIDMap              map[string]string
+	AutoStartServers           []string
+	StartupTimeoutSeconds      int
+	PollIntervalSeconds        int
+	ConnectivityTimeoutSeconds int
+	IdleShutdownSeconds        int
+	MsgStarting                string
+	MsgStartupTimeout          string
+}
+
+type ShutdownConfig struct {
 	protectionEndTime atomic.Int64
 	enabled           atomic.Bool
 }
 
-func NewServerShutdownConfig(enabled bool) *ServerShutdownConfig {
-	cfg := &ServerShutdownConfig{}
+func NewShutdownConfig(enabled bool) *ShutdownConfig {
+	cfg := &ShutdownConfig{}
 	cfg.enabled.Store(enabled)
 	return cfg
 }
 
-func (s *ServerShutdownConfig) IsInProtectionPeriod() bool {
+func (s *ShutdownConfig) IsInProtectionPeriod() bool {
 	return time.Now().UnixMilli() < s.protectionEndTime.Load()
 }
 
-func (s *ServerShutdownConfig) SetProtectionEndTime(timestamp int64) {
+func (s *ShutdownConfig) SetProtectionEndTime(timestamp int64) {
 	s.protectionEndTime.Store(timestamp)
 }
 
-func (s *ServerShutdownConfig) ClearProtection() {
+func (s *ShutdownConfig) ClearProtection() {
 	s.protectionEndTime.Store(0)
 }
 
-func (s *ServerShutdownConfig) IsEnabled() bool {
+func (s *ShutdownConfig) IsEnabled() bool {
 	return s.enabled.Load()
 }
 
-func (s *ServerShutdownConfig) SetEnabled(v bool) {
+func (s *ShutdownConfig) SetEnabled(v bool) {
 	s.enabled.Store(v)
 }
 
@@ -46,23 +61,23 @@ type startingServer struct {
 	result bool
 }
 
-type DynamicServerManager struct {
+type Manager struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	log    logr.Logger
 	proxy  *proxy.Proxy
-	mcs    *MCSManagerClient
-	cfg    *DynamicServerConfig
+	mcs    *mcsmanager.Client
+	cfg    *Config
 
 	mu              sync.Mutex
 	startingServers map[string]*startingServer
 	shutdownTimers  map[string]*time.Timer
-	serverConfigs   map[string]*ServerShutdownConfig
+	serverConfigs   map[string]*ShutdownConfig
 }
 
-func NewDynamicServerManager(ctx context.Context, log logr.Logger, p *proxy.Proxy, mcs *MCSManagerClient, cfg *DynamicServerConfig) *DynamicServerManager {
+func NewManager(ctx context.Context, log logr.Logger, p *proxy.Proxy, mcs *mcsmanager.Client, cfg *Config) *Manager {
 	ctx, cancel := context.WithCancel(ctx)
-	m := &DynamicServerManager{
+	m := &Manager{
 		ctx:             ctx,
 		cancel:          cancel,
 		log:             log.WithName("dynamic-server"),
@@ -71,7 +86,7 @@ func NewDynamicServerManager(ctx context.Context, log logr.Logger, p *proxy.Prox
 		cfg:             cfg,
 		startingServers: make(map[string]*startingServer),
 		shutdownTimers:  make(map[string]*time.Timer),
-		serverConfigs:   make(map[string]*ServerShutdownConfig),
+		serverConfigs:   make(map[string]*ShutdownConfig),
 	}
 
 	m.log.Info("DynamicServerManager initialized", "autoStart", cfg.AutoStartServers)
@@ -79,7 +94,7 @@ func NewDynamicServerManager(ctx context.Context, log logr.Logger, p *proxy.Prox
 	return m
 }
 
-func (m *DynamicServerManager) IsAutoStartServer(name string) bool {
+func (m *Manager) IsAutoStartServer(name string) bool {
 	for _, s := range m.cfg.AutoStartServers {
 		if s == name {
 			return true
@@ -88,7 +103,7 @@ func (m *DynamicServerManager) IsAutoStartServer(name string) bool {
 	return false
 }
 
-func (m *DynamicServerManager) EnsureServerRunning(serverName string) bool {
+func (m *Manager) EnsureServerRunning(serverName string) bool {
 	m.mu.Lock()
 	if s, ok := m.startingServers[serverName]; ok {
 		m.mu.Unlock()
@@ -134,7 +149,7 @@ func (m *DynamicServerManager) EnsureServerRunning(serverName string) bool {
 	return true
 }
 
-func (m *DynamicServerManager) waitForServerReady(serverName, instanceUUID string) bool {
+func (m *Manager) waitForServerReady(serverName, instanceUUID string) bool {
 	pollInterval := time.Duration(m.cfg.PollIntervalSeconds) * time.Second
 	maxAttempts := m.cfg.StartupTimeoutSeconds / m.cfg.PollIntervalSeconds
 
@@ -169,7 +184,7 @@ func (m *DynamicServerManager) waitForServerReady(serverName, instanceUUID strin
 	return false
 }
 
-func (m *DynamicServerManager) checkServerConnectivity(serverName string) bool {
+func (m *Manager) checkServerConnectivity(serverName string) bool {
 	pollInterval := time.Duration(m.cfg.PollIntervalSeconds) * time.Second
 	maxAttempts := m.cfg.ConnectivityTimeoutSeconds / m.cfg.PollIntervalSeconds
 
@@ -188,7 +203,7 @@ func (m *DynamicServerManager) checkServerConnectivity(serverName string) bool {
 		default:
 		}
 
-		err := MCPing(addr, 3*time.Second)
+		err := minecraft.MCPing(addr, 3*time.Second)
 		if err == nil {
 			m.log.Info("Server is accepting connections (MC ping success)", "server", serverName)
 			return true
@@ -202,14 +217,14 @@ func (m *DynamicServerManager) checkServerConnectivity(serverName string) bool {
 	return false
 }
 
-func (m *DynamicServerManager) IsServerStarting(serverName string) bool {
+func (m *Manager) IsServerStarting(serverName string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, ok := m.startingServers[serverName]
 	return ok
 }
 
-func (m *DynamicServerManager) periodicIdleCheck() {
+func (m *Manager) periodicIdleCheck() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -225,7 +240,7 @@ func (m *DynamicServerManager) periodicIdleCheck() {
 	}
 }
 
-func (m *DynamicServerManager) checkAllAutoStartServersIdle() {
+func (m *Manager) checkAllAutoStartServersIdle() {
 	for _, serverName := range m.cfg.AutoStartServers {
 		m.mu.Lock()
 		cfg := m.serverConfigs[serverName]
@@ -250,7 +265,7 @@ func (m *DynamicServerManager) checkAllAutoStartServersIdle() {
 	}
 }
 
-func (m *DynamicServerManager) scheduleShutdown(serverName string) {
+func (m *Manager) scheduleShutdown(serverName string) {
 	if !m.IsAutoShutdownEnabled(serverName) {
 		m.log.V(1).Info("Auto-shutdown disabled for server, skipping", "server", serverName)
 		return
@@ -309,7 +324,7 @@ func (m *DynamicServerManager) scheduleShutdown(serverName string) {
 	m.mu.Unlock()
 }
 
-func (m *DynamicServerManager) cancelShutdown(serverName string) {
+func (m *Manager) cancelShutdown(serverName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -320,11 +335,11 @@ func (m *DynamicServerManager) cancelShutdown(serverName string) {
 	}
 }
 
-func (m *DynamicServerManager) SetShutdownDelay(serverName string, delaySeconds int) {
+func (m *Manager) SetShutdownDelay(serverName string, delaySeconds int) {
 	m.mu.Lock()
 	cfg, ok := m.serverConfigs[serverName]
 	if !ok {
-		cfg = NewServerShutdownConfig(true)
+		cfg = NewShutdownConfig(true)
 		m.serverConfigs[serverName] = cfg
 	}
 	m.mu.Unlock()
@@ -337,7 +352,7 @@ func (m *DynamicServerManager) SetShutdownDelay(serverName string, delaySeconds 
 	m.log.Info("Set protection period", "server", serverName, "seconds", delaySeconds)
 }
 
-func (m *DynamicServerManager) ClearProtectionPeriod(serverName string) {
+func (m *Manager) ClearProtectionPeriod(serverName string) {
 	m.mu.Lock()
 	cfg := m.serverConfigs[serverName]
 	m.mu.Unlock()
@@ -348,11 +363,11 @@ func (m *DynamicServerManager) ClearProtectionPeriod(serverName string) {
 	}
 }
 
-func (m *DynamicServerManager) SetAutoShutdownEnabled(serverName string, enabled bool) {
+func (m *Manager) SetAutoShutdownEnabled(serverName string, enabled bool) {
 	m.mu.Lock()
 	cfg, ok := m.serverConfigs[serverName]
 	if !ok {
-		cfg = NewServerShutdownConfig(true)
+		cfg = NewShutdownConfig(true)
 		m.serverConfigs[serverName] = cfg
 	}
 	m.mu.Unlock()
@@ -368,7 +383,7 @@ func (m *DynamicServerManager) SetAutoShutdownEnabled(serverName string, enabled
 	}
 }
 
-func (m *DynamicServerManager) IsAutoShutdownEnabled(serverName string) bool {
+func (m *Manager) IsAutoShutdownEnabled(serverName string) bool {
 	m.mu.Lock()
 	cfg := m.serverConfigs[serverName]
 	m.mu.Unlock()
@@ -376,7 +391,7 @@ func (m *DynamicServerManager) IsAutoShutdownEnabled(serverName string) bool {
 	return cfg == nil || cfg.IsEnabled()
 }
 
-func (m *DynamicServerManager) Shutdown() {
+func (m *Manager) Shutdown() {
 	m.log.Info("Shutting down DynamicServerManager")
 	m.cancel()
 
@@ -387,4 +402,18 @@ func (m *DynamicServerManager) Shutdown() {
 		timer.Stop()
 	}
 	m.shutdownTimers = make(map[string]*time.Timer)
+}
+
+// GetServerAddr returns the server address for external use
+func (m *Manager) GetServerAddr(serverName string) net.Addr {
+	server := m.proxy.Server(serverName)
+	if server == nil {
+		return nil
+	}
+	return server.ServerInfo().Addr()
+}
+
+// GetConfig returns the dynamic server config
+func (m *Manager) GetConfig() *Config {
+	return m.cfg
 }

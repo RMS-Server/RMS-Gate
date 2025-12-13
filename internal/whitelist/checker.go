@@ -1,4 +1,4 @@
-package main
+package whitelist
 
 import (
 	"bytes"
@@ -19,13 +19,13 @@ const (
 	ServerError
 )
 
-type WhitelistChecker struct {
+type Checker struct {
 	client *http.Client
 	log    logr.Logger
 }
 
-func NewWhitelistChecker(log logr.Logger) *WhitelistChecker {
-	return &WhitelistChecker{
+func NewChecker(log logr.Logger) *Checker {
+	return &Checker{
 		client: &http.Client{},
 		log:    log,
 	}
@@ -36,7 +36,7 @@ type whitelistRequest struct {
 	UUID     string `json:"uuid"`
 }
 
-func (w *WhitelistChecker) Check(ctx context.Context, username, uuid, baseURL string, timeoutSeconds int) CheckResult {
+func (w *Checker) Check(ctx context.Context, username, uuid, baseURL string, timeoutSeconds int) CheckResult {
 	reqBody := whitelistRequest{
 		Username: username,
 		UUID:     uuid,

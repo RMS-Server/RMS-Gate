@@ -1,4 +1,4 @@
-package main
+package loadbalancer
 
 import (
 	"context"
@@ -10,21 +10,46 @@ import (
 	"go.minekube.com/gate/pkg/edition/java/proxy"
 )
 
+type Config struct {
+	Enabled     bool
+	HealthCheck *HealthCheckConfig
+	Servers     map[string]*ServerConfig
+}
+
+type HealthCheckConfig struct {
+	IntervalSeconds        int
+	WindowSize             int
+	UnhealthyAfterFailures int
+	HealthyAfterSuccesses  int
+	JitterThreshold        float64
+	DialTimeoutSeconds     int
+}
+
+type ServerConfig struct {
+	Strategy string
+	Backends []*BackendConfig
+}
+
+type BackendConfig struct {
+	Addr           string
+	MaxConnections int
+}
+
 type LoadBalancer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	log    logr.Logger
 	proxy  *proxy.Proxy
-	cfg    *LoadBalancerConfig
+	cfg    *Config
 
-	servers map[string]*LoadBalancedServerInfo
+	servers map[string]*ServerInfo
 	mu      sync.RWMutex
 
 	history *HistoryManager
 	stopCh  chan struct{}
 }
 
-func NewLoadBalancer(ctx context.Context, log logr.Logger, p *proxy.Proxy, cfg *LoadBalancerConfig, dataDir string) *LoadBalancer {
+func NewLoadBalancer(ctx context.Context, log logr.Logger, p *proxy.Proxy, cfg *Config, dataDir string) *LoadBalancer {
 	ctx, cancel := context.WithCancel(ctx)
 	lb := &LoadBalancer{
 		ctx:     ctx,
@@ -32,7 +57,7 @@ func NewLoadBalancer(ctx context.Context, log logr.Logger, p *proxy.Proxy, cfg *
 		log:     log.WithName("load-balancer"),
 		proxy:   p,
 		cfg:     cfg,
-		servers: make(map[string]*LoadBalancedServerInfo),
+		servers: make(map[string]*ServerInfo),
 		history: NewHistoryManager(dataDir),
 		stopCh:  make(chan struct{}),
 	}
@@ -62,7 +87,7 @@ func (lb *LoadBalancer) Start() error {
 	return nil
 }
 
-func (lb *LoadBalancer) registerServer(name string, cfg *LBServerConfig) error {
+func (lb *LoadBalancer) registerServer(name string, cfg *ServerConfig) error {
 	backends := make([]*Backend, 0, len(cfg.Backends))
 	for _, bcfg := range cfg.Backends {
 		backend := NewBackend(bcfg.Addr, bcfg.MaxConnections, lb.cfg.HealthCheck.WindowSize)
@@ -75,7 +100,7 @@ func (lb *LoadBalancer) registerServer(name string, cfg *LBServerConfig) error {
 		dialTimeout = 5 * time.Second
 	}
 
-	serverInfo := NewLoadBalancedServerInfo(
+	serverInfo := NewServerInfo(
 		name,
 		backends,
 		strategy,
@@ -132,7 +157,7 @@ func (lb *LoadBalancer) healthCheckLoop() {
 
 func (lb *LoadBalancer) checkAllBackends() {
 	lb.mu.RLock()
-	servers := make([]*LoadBalancedServerInfo, 0, len(lb.servers))
+	servers := make([]*ServerInfo, 0, len(lb.servers))
 	for _, s := range lb.servers {
 		servers = append(servers, s)
 	}
@@ -191,16 +216,16 @@ func (lb *LoadBalancer) checkAllBackends() {
 	}
 }
 
-func (lb *LoadBalancer) GetServer(name string) *LoadBalancedServerInfo {
+func (lb *LoadBalancer) GetServer(name string) *ServerInfo {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 	return lb.servers[name]
 }
 
-func (lb *LoadBalancer) GetAllServers() map[string]*LoadBalancedServerInfo {
+func (lb *LoadBalancer) GetAllServers() map[string]*ServerInfo {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
-	result := make(map[string]*LoadBalancedServerInfo, len(lb.servers))
+	result := make(map[string]*ServerInfo, len(lb.servers))
 	for k, v := range lb.servers {
 		result[k] = v
 	}
@@ -260,4 +285,8 @@ func (lb *LoadBalancer) Shutdown() {
 
 func (lb *LoadBalancer) History() *HistoryManager {
 	return lb.history
+}
+
+func (lb *LoadBalancer) Config() *Config {
+	return lb.cfg
 }

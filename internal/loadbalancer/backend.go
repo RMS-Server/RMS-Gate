@@ -1,4 +1,4 @@
-package main
+package loadbalancer
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/RMS-Server/RMS-Gate/internal/minecraft"
 )
 
 type Backend struct {
@@ -371,16 +373,14 @@ func (b *Backend) LastCheckTime() time.Time {
 
 func (b *Backend) MCPing(timeout time.Duration) (time.Duration, error) {
 	start := time.Now()
-	latency := time.Since(start)
 
-	// Hard cap total ping time (DNS + dial + status exchange).
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", b.Addr)
 	if err != nil {
-		return latency, err
+		return time.Since(start), err
 	}
 	defer conn.Close()
 
@@ -390,11 +390,8 @@ func (b *Backend) MCPing(timeout time.Duration) (time.Duration, error) {
 		_ = conn.SetDeadline(time.Now().Add(timeout))
 	}
 
-	err = MCPingConn(conn, b.Addr, timeout)
-	if err != nil {
-		return latency, err
-	}
-	return latency, nil
+	err = minecraft.MCPingConn(conn, b.Addr, timeout)
+	return time.Since(start), err
 }
 
 func (b *Backend) Stats() BackendStats {

@@ -1,4 +1,4 @@
-package main
+package mcsmanager
 
 import (
 	"context"
@@ -11,7 +11,13 @@ import (
 	"github.com/go-logr/logr"
 )
 
-type MCSManagerClient struct {
+type Config struct {
+	BaseURL  string
+	APIKey   string
+	DaemonID string
+}
+
+type Client struct {
 	log      logr.Logger
 	client   *http.Client
 	baseURL  string
@@ -19,8 +25,8 @@ type MCSManagerClient struct {
 	daemonID string
 }
 
-func NewMCSManagerClient(log logr.Logger, cfg *MCSManagerConfig) *MCSManagerClient {
-	return &MCSManagerClient{
+func NewClient(log logr.Logger, cfg *Config) *Client {
+	return &Client{
 		log:      log.WithName("mcsmanager"),
 		client:   &http.Client{Timeout: 30 * time.Second},
 		baseURL:  cfg.BaseURL,
@@ -45,7 +51,7 @@ type apiResponse struct {
 	Error  string `json:"err"`
 }
 
-func (m *MCSManagerClient) StartInstance(ctx context.Context, instanceUUID string) (bool, error) {
+func (m *Client) StartInstance(ctx context.Context, instanceUUID string) (bool, error) {
 	url := fmt.Sprintf("%s/protected_instance/open?uuid=%s&daemonId=%s&apikey=%s",
 		m.baseURL, instanceUUID, m.daemonID, m.apiKey)
 
@@ -86,7 +92,7 @@ func (m *MCSManagerClient) StartInstance(ctx context.Context, instanceUUID strin
 	return true, nil
 }
 
-func (m *MCSManagerClient) StopInstance(ctx context.Context, instanceUUID string) (bool, error) {
+func (m *Client) StopInstance(ctx context.Context, instanceUUID string) (bool, error) {
 	url := fmt.Sprintf("%s/protected_instance/stop?uuid=%s&daemonId=%s&apikey=%s",
 		m.baseURL, instanceUUID, m.daemonID, m.apiKey)
 
@@ -129,7 +135,7 @@ func (m *MCSManagerClient) StopInstance(ctx context.Context, instanceUUID string
 
 // GetInstanceStatus returns instance status:
 // 0: stopped, 1: stopping, 2: starting, 3: running
-func (m *MCSManagerClient) GetInstanceStatus(ctx context.Context, instanceUUID string) (int, error) {
+func (m *Client) GetInstanceStatus(ctx context.Context, instanceUUID string) (int, error) {
 	url := fmt.Sprintf("%s/service/remote_service_instances?daemonId=%s&page=1&page_size=100&apikey=%s",
 		m.baseURL, m.daemonID, m.apiKey)
 
@@ -170,7 +176,7 @@ func (m *MCSManagerClient) GetInstanceStatus(ctx context.Context, instanceUUID s
 	return 2, nil
 }
 
-func (m *MCSManagerClient) IsInstanceRunning(ctx context.Context, instanceUUID string) (bool, error) {
+func (m *Client) IsInstanceRunning(ctx context.Context, instanceUUID string) (bool, error) {
 	status, err := m.GetInstanceStatus(ctx, instanceUUID)
 	if err != nil {
 		return false, err
