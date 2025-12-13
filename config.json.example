@@ -1,6 +1,0 @@
-{
-  "apiUrl": "http://localhost:4002/api/whitelist",
-  "timeoutSeconds": 10,
-  "msgNotInWhitelist": "您当前不在白名单中",
-  "msgServerError": "500服务器内部错误，请联系管理员"
-}
