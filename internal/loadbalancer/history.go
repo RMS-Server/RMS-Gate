@@ -1,12 +1,13 @@
 package loadbalancer
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 const (
@@ -16,33 +17,114 @@ const (
 
 // PeriodStats stores statistics for a specific 15-minute period
 type PeriodStats struct {
-	AvgLatency  float64 `json:"avgLatency"`
-	AvgJitter   float64 `json:"avgJitter"`
-	Samples     int     `json:"samples"`
-	PeriodIndex int     `json:"periodIndex"` // 0-95, stable slot within local day
-	PeriodLabel string  `json:"periodLabel"` // "HH:MM-HH:MM" in local timezone
+	AvgLatency  float64
+	AvgJitter   float64
+	Samples     int
+	PeriodIndex int    // 0-95, stable slot within local day
+	PeriodLabel string // "HH:MM-HH:MM" in local timezone
 }
 
 // BackendHistory stores statistics for 96 periods (24 hours * 4 periods per hour)
 type BackendHistory struct {
-	PeriodStats [96]*PeriodStats `json:"periodStats"` // Index 0-95 for 15-min periods
+	PeriodStats [96]*PeriodStats
 }
 
 // HistoryManager manages historical statistics for all backends
 type HistoryManager struct {
-	mu       sync.RWMutex
-	backends map[string]*BackendHistory // key: backend address
-	filePath string
-	dirty    bool
+	mu     sync.RWMutex
+	db     *sql.DB
+	dbPath string
+
+	// In-memory cache for fast reads
+	cache map[string]*BackendHistory
 }
 
 func NewHistoryManager(dataDir string) *HistoryManager {
+	dbPath := filepath.Join(dataDir, "lb_history.db")
 	hm := &HistoryManager{
-		backends: make(map[string]*BackendHistory),
-		filePath: filepath.Join(dataDir, "lb_history.json"),
+		dbPath: dbPath,
+		cache:  make(map[string]*BackendHistory),
 	}
-	hm.load()
+	hm.initDB()
+	hm.loadFromDB()
 	return hm
+}
+
+func (hm *HistoryManager) initDB() {
+	db, err := sql.Open("sqlite3", hm.dbPath)
+	if err != nil {
+		return
+	}
+	hm.db = db
+
+	// Create table if not exists
+	_, _ = db.Exec(`
+		CREATE TABLE IF NOT EXISTS period_stats (
+			backend_addr TEXT NOT NULL,
+			period_index INTEGER NOT NULL,
+			period_label TEXT NOT NULL,
+			avg_latency REAL NOT NULL,
+			avg_jitter REAL NOT NULL,
+			samples INTEGER NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (backend_addr, period_index)
+		)
+	`)
+
+	// Create index for faster lookups
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_backend_addr ON period_stats(backend_addr)`)
+}
+
+func (hm *HistoryManager) loadFromDB() {
+	if hm.db == nil {
+		return
+	}
+
+	rows, err := hm.db.Query(`
+		SELECT backend_addr, period_index, period_label, avg_latency, avg_jitter, samples
+		FROM period_stats
+	`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
+
+	for rows.Next() {
+		var addr string
+		var periodIndex int
+		var periodLabel string
+		var avgLatency, avgJitter float64
+		var samples int
+
+		if err := rows.Scan(&addr, &periodIndex, &periodLabel, &avgLatency, &avgJitter, &samples); err != nil {
+			continue
+		}
+
+		history, ok := hm.cache[addr]
+		if !ok {
+			history = &BackendHistory{}
+			for i := range history.PeriodStats {
+				history.PeriodStats[i] = &PeriodStats{
+					PeriodIndex: i,
+					PeriodLabel: periodLabelFromIndex(i),
+				}
+			}
+			hm.cache[addr] = history
+		}
+
+		if periodIndex >= 0 && periodIndex < 96 {
+			history.PeriodStats[periodIndex] = &PeriodStats{
+				AvgLatency:  avgLatency,
+				AvgJitter:   avgJitter,
+				Samples:     samples,
+				PeriodIndex: periodIndex,
+				PeriodLabel: periodLabel,
+			}
+		}
+	}
 }
 
 // getPeriodIndex returns the current 15-minute period index (0-95)
@@ -51,7 +133,7 @@ func getPeriodIndex() int {
 	return now.Hour()*4 + now.Minute()/15
 }
 
-func periodLabel(period int) string {
+func periodLabelFromIndex(period int) string {
 	if period < 0 || period > 95 {
 		return ""
 	}
@@ -69,21 +151,19 @@ func (hm *HistoryManager) Record(addr string, latency, jitter float64) {
 	hm.mu.Lock()
 	defer hm.mu.Unlock()
 
-	history, ok := hm.backends[addr]
+	history, ok := hm.cache[addr]
 	if !ok {
 		history = &BackendHistory{}
 		for i := range history.PeriodStats {
-			history.PeriodStats[i] = &PeriodStats{}
+			history.PeriodStats[i] = &PeriodStats{
+				PeriodIndex: i,
+				PeriodLabel: periodLabelFromIndex(i),
+			}
 		}
-		hm.backends[addr] = history
+		hm.cache[addr] = history
 	}
 
 	stats := history.PeriodStats[period]
-	// Backfill period metadata for export/debugging.
-	if stats.PeriodLabel == "" {
-		stats.PeriodIndex = period
-		stats.PeriodLabel = periodLabel(period)
-	}
 	if stats.Samples == 0 {
 		// First sample for this period
 		stats.AvgLatency = latency
@@ -94,7 +174,21 @@ func (hm *HistoryManager) Record(addr string, latency, jitter float64) {
 		stats.AvgJitter = emaAlpha*jitter + (1-emaAlpha)*stats.AvgJitter
 	}
 	stats.Samples++
-	hm.dirty = true
+
+	// Write to DB asynchronously
+	go hm.savePeriodStats(addr, stats)
+}
+
+func (hm *HistoryManager) savePeriodStats(addr string, stats *PeriodStats) {
+	if hm.db == nil {
+		return
+	}
+
+	_, _ = hm.db.Exec(`
+		INSERT OR REPLACE INTO period_stats
+		(backend_addr, period_index, period_label, avg_latency, avg_jitter, samples, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, addr, stats.PeriodIndex, stats.PeriodLabel, stats.AvgLatency, stats.AvgJitter, stats.Samples)
 }
 
 // GetPeriodStats returns statistics for a backend at a specific 15-minute period
@@ -106,7 +200,7 @@ func (hm *HistoryManager) GetPeriodStats(addr string, period int) *PeriodStats {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
 
-	history, ok := hm.backends[addr]
+	history, ok := hm.cache[addr]
 	if !ok {
 		return nil
 	}
@@ -160,80 +254,25 @@ func (hm *HistoryManager) HistoricalScore(addr string, currentLatency, currentJi
 	return int(score)
 }
 
-// Save persists the history to disk
+// Save is kept for compatibility but now does nothing (writes are immediate)
 func (hm *HistoryManager) Save() error {
-	hm.mu.RLock()
-	if !hm.dirty {
-		hm.mu.RUnlock()
-		return nil
-	}
-	data, err := json.MarshalIndent(hm.backends, "", "  ")
-	hm.mu.RUnlock()
-
-	if err != nil {
-		return err
-	}
-
-	dir := filepath.Dir(hm.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	if err := os.WriteFile(hm.filePath, data, 0644); err != nil {
-		return err
-	}
-
-	hm.mu.Lock()
-	hm.dirty = false
-	hm.mu.Unlock()
-
 	return nil
 }
 
-func (hm *HistoryManager) load() {
-	data, err := os.ReadFile(hm.filePath)
-	if err != nil {
-		return // File doesn't exist, start fresh
-	}
-
-	var backends map[string]*BackendHistory
-	if err := json.Unmarshal(data, &backends); err != nil {
-		return
-	}
-
-	// Initialize nil period stats
-	for _, history := range backends {
-		for i := range history.PeriodStats {
-			if history.PeriodStats[i] == nil {
-				history.PeriodStats[i] = &PeriodStats{}
-			}
-			// Backfill metadata for older history files.
-			if history.PeriodStats[i].PeriodLabel == "" {
-				history.PeriodStats[i].PeriodIndex = i
-				history.PeriodStats[i].PeriodLabel = periodLabel(i)
-			}
-		}
-	}
-
-	hm.backends = backends
-}
-
-// StartAutoSave starts a goroutine that periodically saves history
+// StartAutoSave is kept for compatibility but now does nothing
 func (hm *HistoryManager) StartAutoSave(interval time.Duration, stopCh <-chan struct{}) {
 	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				hm.Save()
-			case <-stopCh:
-				hm.Save() // Save on shutdown
-				return
-			}
-		}
+		<-stopCh
+		hm.Close()
 	}()
+}
+
+// Close closes the database connection
+func (hm *HistoryManager) Close() error {
+	if hm.db != nil {
+		return hm.db.Close()
+	}
+	return nil
 }
 
 // GetAllStats returns all historical data (for debugging/display)
@@ -241,8 +280,8 @@ func (hm *HistoryManager) GetAllStats() map[string]*BackendHistory {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
 
-	result := make(map[string]*BackendHistory, len(hm.backends))
-	for k, v := range hm.backends {
+	result := make(map[string]*BackendHistory, len(hm.cache))
+	for k, v := range hm.cache {
 		result[k] = v
 	}
 	return result
