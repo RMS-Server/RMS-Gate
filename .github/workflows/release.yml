@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          # Linux amd64
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/rms-gate-linux-amd64 .
+          # Linux arm64
+          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/rms-gate-linux-arm64 .
+          # Windows amd64
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/rms-gate-windows-amd64.exe .
+          # Darwin amd64
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/rms-gate-darwin-amd64 .
+          # Darwin arm64
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/rms-gate-darwin-arm64 .
+
+      - name: Get short commit SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "Automated release for commit \`${{ github.sha }}\`" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "## Commits" >> $GITHUB_OUTPUT
+          echo '${{ toJSON(github.event.commits) }}' | jq -r '.[] | "- [`\(.id[0:7])`](\(.url)) \(.message | split("\n")[0])"' >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.sha }}
+          name: Build ${{ steps.sha.outputs.short }}
+          body: ${{ steps.notes.outputs.body }}
+          files: dist/*
+          make_latest: true
