@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"go.minekube.com/gate/pkg/edition/java/proxy"
 
+	"github.com/RMS-Server/RMS-Gate/internal/loadbalancer"
 	"github.com/RMS-Server/RMS-Gate/internal/mcsmanager"
 	"github.com/RMS-Server/RMS-Gate/internal/minecraft"
 )
@@ -185,16 +186,14 @@ func (m *Manager) waitForServerReady(serverName, instanceUUID string) bool {
 }
 
 func (m *Manager) checkServerConnectivity(serverName string) bool {
-	pollInterval := time.Duration(m.cfg.PollIntervalSeconds) * time.Second
-	maxAttempts := m.cfg.ConnectivityTimeoutSeconds / m.cfg.PollIntervalSeconds
-
 	server := m.proxy.Server(serverName)
 	if server == nil {
 		m.log.Error(nil, "Server not registered in proxy", "server", serverName)
 		return false
 	}
 
-	addr := server.ServerInfo().Addr()
+	pollInterval := time.Duration(m.cfg.PollIntervalSeconds) * time.Second
+	maxAttempts := m.cfg.ConnectivityTimeoutSeconds / m.cfg.PollIntervalSeconds
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		select {
@@ -203,17 +202,53 @@ func (m *Manager) checkServerConnectivity(serverName string) bool {
 		default:
 		}
 
-		err := minecraft.MCPing(addr, 3*time.Second)
-		if err == nil {
-			m.log.Info("Server is accepting connections (MC ping success)", "server", serverName)
+		// Check connectivity - try all backends if load-balanced
+		if m.checkAnyBackendReachable(server, serverName) {
 			return true
 		}
 
-		m.log.V(1).Info("Server not yet accepting connections", "server", serverName, "attempt", attempt+1, "error", err)
+		m.log.V(1).Info("Server not yet accepting connections", "server", serverName, "attempt", attempt+1)
 		time.Sleep(pollInterval)
 	}
 
 	m.log.Error(nil, "Server connectivity check timed out", "server", serverName)
+	return false
+}
+
+func (m *Manager) checkAnyBackendReachable(server proxy.RegisteredServer, serverName string) bool {
+	serverInfo := server.ServerInfo()
+
+	// Check if this is a load-balanced server with multiple backends
+	type backendProvider interface {
+		Backends() []*loadbalancer.Backend
+	}
+
+	if lbInfo, ok := serverInfo.(backendProvider); ok {
+		// Load-balanced server - check all backends
+		backends := lbInfo.Backends()
+		for _, backend := range backends {
+			addr, err := net.ResolveTCPAddr("tcp", backend.Addr)
+			if err != nil {
+				m.log.V(1).Info("Failed to resolve backend address", "backend", backend.Addr, "error", err)
+				continue
+			}
+
+			if minecraft.MCPing(addr, 3*time.Second) == nil {
+				m.log.Info("Server is accepting connections (MC ping success)",
+					"server", serverName, "backend", backend.Addr)
+				return true
+			}
+		}
+		return false
+	}
+
+	// Regular server - check single address
+	addr := serverInfo.Addr()
+	if minecraft.MCPing(addr, 3*time.Second) == nil {
+		m.log.Info("Server is accepting connections (MC ping success)",
+			"server", serverName, "addr", addr.String())
+		return true
+	}
 	return false
 }
 
