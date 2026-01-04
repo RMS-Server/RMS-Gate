@@ -11,6 +11,7 @@ import (
 type Config struct {
 	APIUrl            string               `json:"apiUrl"`
 	TimeoutSeconds    int                  `json:"timeoutSeconds"`
+	ServerTier        int                  `json:"serverTier"`
 	MsgNotInWhitelist string               `json:"msgNotInWhitelist"`
 	MsgServerError    string               `json:"msgServerError"`
 	MCSManager        *MCSManagerConfig    `json:"mcsManager"`
@@ -72,6 +73,7 @@ func defaultConfig() *Config {
 	return &Config{
 		APIUrl:            "http://localhost:8080/api/whitelist",
 		TimeoutSeconds:    10,
+		ServerTier:        1,
 		MsgNotInWhitelist: "您当前不在白名单中",
 		MsgServerError:    "500服务器内部错误，请联系管理员",
 		MCSManager: &MCSManagerConfig{

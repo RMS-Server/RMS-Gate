@@ -149,7 +149,7 @@ func (r *RMSWhitelist) onLogin(e *proxy.LoginEvent) {
 	username := player.Username()
 	uuid := player.ID().String()
 
-	result := r.checker.Check(r.ctx, username, uuid, r.config.APIUrl, r.config.TimeoutSeconds)
+	result := r.checker.Check(r.ctx, username, uuid, r.config.APIUrl, r.config.TimeoutSeconds, r.config.ServerTier)
 
 	switch result {
 	case whitelist.Allowed:
@@ -475,6 +475,29 @@ func (r *RMSWhitelist) cmdLBStatus(ctx *command.Context) error {
 		S:       component.Style{Color: color.Gold},
 	})
 
+	// Calculate min latency and jitter for relative scoring (same as strategy.go)
+	backends := server.Backends()
+	var minLatency, minJitter float64 = -1, -1
+	for _, b := range backends {
+		if !b.IsAvailable() {
+			continue
+		}
+		lat := b.AvgLatency()
+		jit := b.Jitter()
+		if lat > 0 && (minLatency < 0 || lat < minLatency) {
+			minLatency = lat
+		}
+		if jit > 0 && (minJitter < 0 || jit < minJitter) {
+			minJitter = jit
+		}
+	}
+	if minLatency <= 0 {
+		minLatency = 1
+	}
+	if minJitter <= 0 {
+		minJitter = 1
+	}
+
 	for _, stat := range stats {
 		statusColor := color.Green
 		statusText := "OK"
@@ -486,10 +509,16 @@ func (r *RMSWhitelist) cmdLBStatus(ctx *command.Context) error {
 			statusText = "UNHEALTHY"
 		}
 
+		// Calculate score the same way as strategy selection
 		score := 0
-		for _, b := range server.Backends() {
+		histScore := 0
+		for _, b := range backends {
 			if b.Addr == stat.Addr {
-				score = b.HealthScore(r.loadBalancer.Config().HealthCheck.JitterThreshold)
+				score = b.RelativeHealthScore(minLatency, minJitter)
+				if r.loadBalancer.History() != nil {
+					histScore = r.loadBalancer.History().HistoricalScore(b.Addr, b.AvgLatency(), b.Jitter())
+					score += histScore
+				}
 				break
 			}
 		}
@@ -498,9 +527,13 @@ func (r *RMSWhitelist) cmdLBStatus(ctx *command.Context) error {
 			Content: fmt.Sprintf("  %s [%s] - %d player(s)", stat.Addr, statusText, stat.CurrentConns),
 			S:       component.Style{Color: statusColor},
 		})
+		histInfo := ""
+		if histScore != 0 {
+			histInfo = fmt.Sprintf(" (hist: %+d)", histScore)
+		}
 		ctx.Source.SendMessage(&component.Text{
-			Content: fmt.Sprintf("    Score: %d | Max: %d | Latency: %.1fms | Jitter: %.1fms | Fails: %d",
-				score, stat.MaxConnections, stat.AvgLatency, stat.Jitter, stat.FailCount),
+			Content: fmt.Sprintf("    Score: %d%s | Max: %d | Latency: %.1fms | Jitter: %.1fms | Fails: %d",
+				score, histInfo, stat.MaxConnections, stat.AvgLatency, stat.Jitter, stat.FailCount),
 			S: component.Style{Color: color.Gray},
 		})
 		if len(stat.Players) > 0 {

@@ -32,14 +32,16 @@ func NewChecker(log logr.Logger) *Checker {
 }
 
 type whitelistRequest struct {
-	Username string `json:"username"`
-	UUID     string `json:"uuid"`
+	Username   string `json:"username"`
+	UUID       string `json:"uuid"`
+	ServerTier int    `json:"serverTier"`
 }
 
-func (w *Checker) Check(ctx context.Context, username, uuid, baseURL string, timeoutSeconds int) CheckResult {
+func (w *Checker) Check(ctx context.Context, username, uuid, baseURL string, timeoutSeconds, serverTier int) CheckResult {
 	reqBody := whitelistRequest{
-		Username: username,
-		UUID:     uuid,
+		Username:   username,
+		UUID:       uuid,
+		ServerTier: serverTier,
 	}
 
 	jsonData, err := json.Marshal(reqBody)
